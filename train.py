@@ -41,7 +41,7 @@ def estimate_loss(model):
 
 a = arg()
 a.vocab_size = getVocabSize()
-print(a.vocab_size)
+logger.info(f"词表大小{a.vocab_size}")
 m = GPT(a)
 m.to(arg.device)
 optimizer = torch.optim.Adam(m.parameters(), lr=1e-3)
