@@ -20,6 +20,21 @@ class ModelArgs:
     device : str = 'cuda:2' if torch.cuda.is_available() else 'cpu'
     max_iter: int = 10
 
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps:float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x):
+        output = self._norm(x.float()).type_as(x)
+        return output * self.weight
+
+
 class Head(nn.Module):
     """ 单个注意力头 """
     def __init__(self, arg: ModelArgs):
@@ -71,7 +86,7 @@ class FeedBlock(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(arg.n_embadding, 4 * arg.n_embadding),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(4 * arg.n_embadding, arg.n_embadding),
             nn.Dropout(arg.dropout)
         )
@@ -85,8 +100,8 @@ class Block(nn.Module):
         super().__init__()
         self.heads = MultiHeadAttention(arg)
         self.fb = FeedBlock(arg)
-        self.l1 = nn.LayerNorm(arg.n_embadding)
-        self.l2 = nn.LayerNorm(arg.n_embadding)
+        self.l1 = RMSNorm(arg.n_embadding)
+        self.l2 = RMSNorm(arg.n_embadding)
         self.dropout = nn.Dropout(arg.dropout)
 
     def forward(self, x):
@@ -154,19 +169,13 @@ class GPT(nn.Module):
             Block(arg),
             nn.Dropout(arg.dropout)
         )
-        self.conv1 = nn.Conv1d(in_channels=arg.n_embadding, out_channels=64, kernel_size=3)
-        self.pool = nn.MaxPool1d(kernel_size=arg.block_size - 2)
-        self.l1 = nn.Linear(64, 14)
-        self.decice = arg.device
+        self.l1 = nn.Linear(arg.n_embadding, 16)
 
     def forward(self, idx):
         B, T = idx.shape
         tok_emb = self.token_embedding_table(idx)  # (B, T, n_embadding)
         temp = tok_emb  # 自动广播
         temp = self.heads(temp)
-        temp = temp.transpose(2, 1)
-        temp = self.conv1(temp)
-        temp = self.pool(temp)
-        temp = temp.view(temp.size(0), -1)  # 扁平化
+        temp = self.heads(temp)[:,-1,:].reshape(B, -1)
         logits = self.l1(temp)
         return logits
