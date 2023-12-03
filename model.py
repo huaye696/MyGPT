@@ -169,7 +169,7 @@ class GPT(nn.Module):
             Block(arg),
             nn.Dropout(arg.dropout)
         )
-        self.l1 = nn.Linear(arg.n_embadding, 16)
+        self.l1 = nn.Linear(arg.n_embadding, 14)
 
     def forward(self, idx):
         B, T = idx.shape
