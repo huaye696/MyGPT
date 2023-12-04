@@ -23,36 +23,53 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 @torch.no_grad()
-def estimate_loss(model):
+def estimate_loss_acc(model, p):
     model.eval()
     losses = []
-    for x, y in getABatch('val', arg.batch_size, arg.block_size):
-        x = x.to(arg.device)
-        y = y.to(arg.device)
+    # 验证集中计算损失
+    for x, y in getABatch('val', p.batch_size, p.block_size):
+        x = x.to(p.device)
+        y = y.to(p.device)
         logits = model(x)
         # 将targets展平,取出所有的字符
         y = y.view(-1)
         # 交叉熵损失函数会先计算logits的softmax,确定类别,再进行标签比较
         loss = F.cross_entropy(logits, y)
         losses.append(loss.item())
-    out = np.mean(losses)
+    val_loss = np.mean(losses)
+    # 测试集中计算准确度
+    test_acc = 0
+    testCount = 0
+    for x, y in getABatch('test', p.batch_size, p.block_size):
+        x = x.to(p.device)
+        y = y.to(p.device)
+        testCount += p.batch_size   # 计算有多少测试集
+        logits = model(x)
+        y = y.view(-1)
+        probabilities = F.softmax(logits, dim=-1)
+        _, y_hat = probabilities.max(dim=1)
+        acc = y == y_hat
+        acc = acc.sum().item()
+        test_acc += acc
+    acc_score = test_acc / testCount
     model.train()
-    return out
+    return [val_loss, acc_score]
 
-a = arg()
-a.vocab_size = getVocabSize()
-logger.info(f"词表大小{a.vocab_size}")
-m = GPT(a)
-m.to(arg.device)
+parameter = arg()
+parameter.vocab_size = getVocabSize()
+logger.info(f"词表大小{parameter.vocab_size}")
+m = GPT(parameter)
+m.to(parameter.device)
 optimizer = torch.optim.Adam(m.parameters(), lr=1e-3)
 trainLosses = []
 val_losses = []
+test_accuracies = []
 count = 0
 logger.info("start training")
-for step in range(arg.max_iter):
+for step in range(parameter.max_iter):
     trainLoss = []
     logger.info(f"The step is {step}")
-    for X, Y in getABatch('train', arg.batch_size, arg.block_size):
+    for X, Y in getABatch('train', parameter.batch_size, parameter.block_size):
         X, Y = X.to(arg.device),Y.to(arg.device)
         logits = m(X)
         # 将targets展平,取出所有的字符
@@ -63,23 +80,26 @@ for step in range(arg.max_iter):
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-    if step != -1:
-        val_loss = estimate_loss(m)
-        t_loss = np.mean(trainLoss)
-        trainLosses.append(t_loss)
-        val_losses.append(val_loss)
-        count += 1
-        logger.info(f"step{step}: train loss {t_loss}, val loss {val_loss}")
+    # 训练一轮后,计算验证损失和测试准确度
+    out = estimate_loss_acc(m)
+    val_loss = out[0]
+    test_acc = out[1]
+    train_loss = np.mean(trainLoss)  # 每次迭代一轮,平均每一个批量的loss
+    trainLosses.append(train_loss)  # 加入最终的训练loss表示
+    val_losses.append(val_loss)  # 加入最终的验证loss表示
+    test_accuracies.append(test_acc)  # 加入最终的测试准确度表示
+    logger.info(f"step {step}: train loss {train_loss}, val loss {val_loss}, test acc {test_acc}")
 
 
 torch.save(m,'NewsModel.pth')
 plt.plot(trainLosses,label='train_loss')
 plt.plot(val_losses,label='val_loss')
+plt.plot(test_accuracies,label='test_accuracy')
 plt.xlabel('step')
 plt.ylabel('loss')
-plt.title('train and val loss')
+plt.title('train loss & val loss & test accuracy')
 plt.legend()
 
 # 显示图形
 plt.show()
-plt.savefig("多分类问题训练损失.png")
+plt.savefig("多分类问题训练结果.png")
