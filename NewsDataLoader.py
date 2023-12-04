@@ -14,10 +14,10 @@ for i in range(0, 14):
             newsAllItems.append(item)
 # 打乱顺序，引入随机性
 random.shuffle(newsAllItems)
-val_test_data_len = 0.1 * len(newsAllItems)  # 验证集大小 和 测试集大小
+val_test_data_len = int(0.1 * len(newsAllItems))  # 验证集大小 和 测试集大小
 newsValItems = newsAllItems[:val_test_data_len]
-newsTestItems = newsValItems[val_test_data_len : val_test_data_len]
-newsTrainItems = newsValItems[val_test_data_len * 2 :]
+newsTestItems = newsAllItems[val_test_data_len : val_test_data_len * 2]
+newsTrainItems = newsAllItems[val_test_data_len * 2 :]
 print("数据加载完毕")
 
 def getVocabSize():
@@ -36,7 +36,6 @@ def getABatch(split, batch_size, block_size):
     else:
         data = newsTestItems
     batch_num = len(data) // batch_size  # 一共有多少个batch
-    print(batch_num)
     for _ in range(0, batch_num):
         Xs = [item[0] for item in data[pre_index: pre_index + batch_size]]  # 此时取出一个batch中的新闻
         Ys = [item[1] for item in data[pre_index: pre_index + batch_size]]  # 取出当前batch中的新闻标签

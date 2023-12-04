@@ -14,8 +14,8 @@ class ModelArgs:
     head_dim: int = n_embadding // n_heads  # 每个注意力头的维度
     vocab_size: int = -1  # 词表大小
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
-    batch_size: int = 32  # 一个批量大小
-    block_size: int = 64  # 一个批量中包含的字符数
+    batch_size: int = 64  # 一个批量大小
+    block_size: int = 256  # 一个批量中包含的字符数
     dropout: int = 0.4
     device : str = 'cuda:2' if torch.cuda.is_available() else 'cpu'
     max_iter: int = 10

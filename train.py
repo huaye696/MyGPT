@@ -4,10 +4,10 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
-# from data import getDataLoader, getVocabSize
 import matplotlib.pyplot as plt
 import logging
 from NewsDataLoader import getABatch, getVocabSize
+import time
 
 
 # 创建logger对象
@@ -64,13 +64,14 @@ optimizer = torch.optim.Adam(m.parameters(), lr=1e-3)
 trainLosses = []
 val_losses = []
 test_accuracies = []
-count = 0
 logger.info("start training")
+print("start training")
 for step in range(parameter.max_iter):
     trainLoss = []
-    logger.info(f"The step is {step}")
+    logger.info(f"step {step}")
+    start_time = time.time()
     for X, Y in getABatch('train', parameter.batch_size, parameter.block_size):
-        X, Y = X.to(arg.device),Y.to(arg.device)
+        X, Y = X.to(parameter.device),Y.to(parameter.device)
         logits = m(X)
         # 将targets展平,取出所有的字符
         Y = Y.view(-1)
@@ -80,8 +81,13 @@ for step in range(parameter.max_iter):
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+    # 计算训练时间
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    logger.info(f"step {step} complete! spend time is {elapsed_time} s")
+    print(f"step {step} complete! spend time is {elapsed_time} s")
     # 训练一轮后,计算验证损失和测试准确度
-    out = estimate_loss_acc(m)
+    out = estimate_loss_acc(m, parameter)
     val_loss = out[0]
     test_acc = out[1]
     train_loss = np.mean(trainLoss)  # 每次迭代一轮,平均每一个批量的loss
@@ -89,6 +95,7 @@ for step in range(parameter.max_iter):
     val_losses.append(val_loss)  # 加入最终的验证loss表示
     test_accuracies.append(test_acc)  # 加入最终的测试准确度表示
     logger.info(f"step {step}: train loss {train_loss}, val loss {val_loss}, test acc {test_acc}")
+    print(f"step {step}: train loss {train_loss}, val loss {val_loss}, test acc {test_acc}")
 
 
 torch.save(m,'NewsModel.pth')
