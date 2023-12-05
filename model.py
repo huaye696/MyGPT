@@ -176,6 +176,6 @@ class GPT(nn.Module):
         tok_emb = self.token_embedding_table(idx)  # (B, T, n_embadding)
         temp = self.heads(tok_emb)  # (B, T, n_embadding)
         # 不能单单用最后一个词的预测作为分类线性层的输入，效果非常差，换一种方法
-        temp = self.heads(temp)[:,-1,:].reshape(B, -1)
-        logits = self.l1(temp)
+        token_last_feature = temp[:,-1,:].reshape(B, -1)
+        logits = self.l1(token_last_feature)
         return logits
