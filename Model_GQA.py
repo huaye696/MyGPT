@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Tuple
+import math
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -7,14 +8,14 @@ from torch import nn
 
 @dataclass
 class ModelArgs:
-    n_embadding: int = 320  # 嵌入维度
+    n_embadding: int = 128  # 嵌入维度
     # 注意力相关参数
     n_heads: int = 32  # 注意力头
     head_dim: int = n_embadding // n_heads  # 每个注意力头的维度
     vocab_size: int = -1  # 词表大小
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
-    batch_size: int = 32  # 一个批量大小
-    block_size: int = 256  # 一个批量中包含的字符数
+    batch_size: int = 64  # 一个批量大小
+    block_size: int = 1024  # 一个批量中包含的字符数
     dropout: int = 0.4
     device : str = 'cuda:2' if torch.cuda.is_available() else 'cpu'
     max_iter: int = 10
@@ -33,52 +34,56 @@ class RMSNorm(nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
+def repeat_kv(t, rep):
+    bsz, bls, kv_head, head_dim = t.shape
+    t = t.unsqueeze(-2).expand(bsz, bls, kv_head, rep, head_dim)
+    t = t.reshape(bsz, bls, kv_head * rep, head_dim)
+    return t
 
-class Head(nn.Module):
-    """ 单个注意力头 """
-    def __init__(self, arg: ModelArgs):
-        super(Head, self).__init__()
-        self.key = nn.Linear(arg.n_embadding, arg.head_dim, bias=False)  # 当前这个词是一个什么
-        self.value = nn.Linear(arg.n_embadding, arg.head_dim, bias=False)  # 当前这个值需要与其他值交互的一个内容
-        self.query = nn.Linear(arg.n_embadding, arg.head_dim, bias=False)  # 当前词正在寻找什么，比如“我是一个元音，我在找一个辅音”
-        # 生成下三角矩阵，命名为tril，将其存放于torch的缓存区中，用于长期存储，但是不会反向传播，不受参数优化
-        self.register_buffer('tril', torch.tril(torch.ones(arg.block_size, arg.block_size)))
-        self.dropout = nn.Dropout(arg.dropout)
-        # 生成旋转辐角矩阵
-        self.freqs_cis = precompute_freqs_cis(arg.head_dim, arg.block_size).to(arg.device)
-        self.batch_size = arg.batch_size
-        self.block_size = arg.block_size
-        self.head_dim = arg.head_dim
-
-    def forward(self, x):
-        B, T, C = x.shape
-        k = self.key(x)
-        q = self.query(x)
-        xk = k.view(self.batch_size, self.block_size, 1, self.head_dim)
-        xq = q.view(self.batch_size, self.block_size, 1, self.head_dim)
-        q, k = apply_rotary_emb(xq, xk, freqs_cis=self.freqs_cis)
-        q = q.flatten(2)
-        k = k.flatten(2)
-        weight = q @ k.transpose(-2, -1) * C**-0.5  # 得到权重，但是GPT不想看见未出现的字符权重
-        weight = weight.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  #  把上三角的等于0的位置，全部替换为-inf
-        weight = F.softmax(weight, dim=-1)
-        v = self.value(x)
-        out = weight @ v
-        return out
-
-
-class MultiHeadAttention(nn.Module):
-    """ 多头注意力 """
+class GroupQueryAttention(nn.Module):
     def __init__(self, arg: ModelArgs):
         super().__init__()
-        self.head = nn.ModuleList(Head(arg) for _ in range(arg.n_heads))
-        self.linear = nn.Linear(arg.n_embadding, arg.n_embadding)
+        self.queryHead = arg.n_heads
+        self.key_valueHead = arg.n_heads // 2   # key 和 value 可以不用那么多头
+        self.head_dim = arg.head_dim
+        self.Wq = nn.ModuleList([
+            nn.Linear(arg.n_embadding, arg.head_dim, bias=False) for _ in range(self.queryHead)
+        ])
+        self.Wk = nn.ModuleList([
+            nn.Linear(arg.n_embadding, arg.head_dim, bias=False) for _ in range(self.key_valueHead)
+        ])
+        self.Wv = nn.ModuleList([
+            nn.Linear(arg.n_embadding, arg.head_dim, bias=False) for _ in range(self.key_valueHead)
+        ])
+        self.Wo = nn.Linear(arg.n_embadding, arg.n_embadding)
+        self.freqs_cis = precompute_freqs_cis(arg.head_dim, arg.block_size).to(arg.device)
         self.dropout = nn.Dropout(arg.dropout)
 
-    def forward(self, x):
-        output = torch.cat([h(x) for h in self.head], dim=-1)
-        output = self.dropout(self.linear(output))
-        return output
+    def forward(self, x, effective_len):
+        bsz, bls, _ = x.shape
+        queries = torch.cat([wq(x).unsqueeze(-2) for wq in self.Wq], dim=-2)  # (bsz, bls, queryHead, head_dim)
+        _keys = torch.cat([wk(x).unsqueeze(-2) for wk in self.Wk], dim=-2)  # (bsz, bls, key_valueHead, head_dim)
+        _values = torch.cat([wv(x).unsqueeze(-2) for wv in self.Wv], dim=-2)
+        queries, keys = apply_rotary_emb(queries, _keys, freqs_cis=self.freqs_cis)  # 应用旋转位置编码
+        values = repeat_kv(_values, 2)
+        keys = repeat_kv(_keys, 2)
+        queries = queries.transpose(1, 2)  # (bsz, head_size, bls, head_dim)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+        scores = torch.matmul(queries, keys.transpose(2, 3)) / math.sqrt(self.head_dim)  # (bsz, head_size, bls, bls)
+        mask_look_ahead = torch.full((1, 1, bls, bls), float("-inf"), device=x.device)  # (1,1,bls,bls)的全-inf矩阵
+        mask_look_ahead = torch.triu(mask_look_ahead, diagonal=1).type_as(x)  # 对角线以上的元素保持不变，以下清零
+        scores = scores + mask_look_ahead
+        if effective_len is not None:
+            mask_pad = torch.full(scores.shape, float(0), device=x.device)
+            for batch, batch_effective_len in enumerate(effective_len):
+                mask_pad[batch, :, :, bls - batch_effective_len:] = float("-inf")
+            scores = scores + mask_pad
+        scores = F.softmax(scores.float(), dim=-1).type_as(x)  # (bsz, head_size, bls, bls)
+        output = torch.matmul(scores, values)
+        output = output.transpose(1, 2)
+        output = output.contiguous().view(bsz, bls, -1)
+        return self.dropout(self.Wo(output))
 
 class FeedBlock(nn.Module):
     def __init__(self, arg: ModelArgs):
@@ -97,14 +102,14 @@ class FeedBlock(nn.Module):
 class Block(nn.Module):
     def __init__(self, arg: ModelArgs):
         super().__init__()
-        self.heads = MultiHeadAttention(arg)
+        self.heads = GroupQueryAttention(arg)
         self.fb = FeedBlock(arg)
         self.l1 = RMSNorm(arg.n_embadding)
         self.l2 = RMSNorm(arg.n_embadding)
         self.dropout = nn.Dropout(arg.dropout)
 
     def forward(self, x):
-        x = self.l1(x + self.heads(x))
+        x = self.l1(x + self.heads(x, None))
         x = self.l2(x + self.fb(x))
         return x
 

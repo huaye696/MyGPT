@@ -1,5 +1,5 @@
-from ModelWithNormalProsition import ModelArgs as arg
-from ModelWithNormalProsition import GPT
+from Model_MHA import ModelArgs as arg
+from Model_MHA import GPT
 import torch
 from torch import nn
 import torch.nn.functional as F
